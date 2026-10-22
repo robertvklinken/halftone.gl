@@ -1,7 +1,8 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { sceneVert, sceneFrag, quadVert, postFrag } from './shaders'
+import { sceneVert, sceneFrag, quadVert, postFrag, abstractFrag } from './shaders'
 import { drawOverlay } from './overlay'
+import { placeholderImage } from './image'
 import * as icons from './icons'
 
 const GEOMETRIES = {
@@ -22,6 +23,13 @@ const GEOMETRIES = {
 
 const PATTERNS = ['fingerprint', 'topo', 'stripes', 'spots', 'cloud', 'none']
 const SHAPES = ['circle', 'square', 'diamond', 'plus', 'ring', 'vbar', 'hbar', 'glyph']
+const IMAGE_TARGETS = ['dark', 'light', 'all']
+const IMAGE_TONES = ['image', 'inverted', 'even']
+const IMAGE_COLORS = ['original', 'mono', 'duotone']
+const MARK_COLORS = ['light', 'dark', 'tinted']
+const ABSTRACT_STYLES = ['none', 'liquid', 'vortex', 'smear']
+// the abstract pass is soft anyway, so it never needs more than this
+const ABSTRACT_MAX = 1024
 
 // Ramp sets are ordered sparse -> dense and picked by brightness; random sets
 // pick any character and let brightness drive size and visibility.
@@ -137,7 +145,6 @@ export class Engine {
         uShape: f(0),
         uDotMin: f(0),
         uDotMax: f(1),
-        uAngle: f(0),
         uLevels: f(0),
         uDither: f(0),
         uContrast: f(1),
@@ -169,11 +176,57 @@ export class Engine {
         uOverlayMode: f(0),
         uInk: f(new THREE.Vector3(1, 1, 1)),
         uPaper: f(new THREE.Vector3(0, 0, 0)),
+        uImageMode: f(0),
+        tImage: f(null),
+        uImgScale: f(new THREE.Vector2(1, 1)),
+        uImgTexel: f(1),
+        uImgTarget: f(0),
+        uImgLevel: f(0.4),
+        uImgSoft: f(0.1),
+        uImgSpread: f(0),
+        uImgDrift: f(0),
+        uImgTone: f(0),
+        uFrost: f(0),
+        uFrostBlur: f(0),
+        uShade: f(0),
+        uImgColor: f(0),
+        uMarkColor: f(0),
+        uMarkAlpha: f(1),
+        uImgCircle: f(0),
+        uImgOutside: f(0),
       },
       depthTest: false,
       depthWrite: false,
     })
     this.postScene = quad(this.postMat)
+
+    // image mode's abstract pass: the photo, reshaped, into a mipmapped target
+    this.absRT = new THREE.WebGLRenderTarget(1, 1, {
+      generateMipmaps: true,
+      minFilter: THREE.LinearMipmapLinearFilter,
+      magFilter: THREE.LinearFilter,
+      depthBuffer: false,
+    })
+    this.absMat = new THREE.ShaderMaterial({
+      vertexShader: quadVert,
+      fragmentShader: abstractFrag,
+      uniforms: {
+        tPhoto: f(null),
+        uPhotoSize: f(new THREE.Vector2(1, 1)),
+        uTime: f(0),
+        uAbsStyle: f(1),
+        uAbsAmount: f(0.5),
+        uAbsScale: f(1),
+        uAbsSpeed: f(0),
+        uAbsSoft: f(0),
+        uAbsSwirl: f(0),
+      },
+      depthTest: false,
+      depthWrite: false,
+    })
+    this.absScene = quad(this.absMat)
+
+    this.setImage(placeholderImage())
 
     this.onPointer = (e) => {
       const r = canvas.getBoundingClientRect()
@@ -202,6 +255,21 @@ export class Engine {
     this.postMat.uniforms.uRes.value.set(pw, ph)
     this.camera.aspect = w / h
     this.camera.updateProjectionMatrix()
+  }
+
+  // canvas (or image) for image mode; mipmaps make the blurs cheap
+  setImage(img) {
+    this.imageTex?.dispose()
+    const tex = new THREE.Texture(img)
+    tex.minFilter = THREE.LinearMipmapLinearFilter
+    tex.needsUpdate = true
+    this.imageTex = tex
+    this.imageSize = [img.width, img.height]
+    this.postMat.uniforms.tImage.value = tex
+    const k = Math.min(1, ABSTRACT_MAX / Math.max(img.width, img.height))
+    this.absRT.setSize(Math.round(img.width * k), Math.round(img.height * k))
+    this.absMat.uniforms.tPhoto.value = tex
+    this.absMat.uniforms.uPhotoSize.value.set(img.width, img.height)
   }
 
   setParams(p) {
@@ -269,6 +337,8 @@ export class Engine {
     this.spin.y += o.spin.y * dt * 2 * p.output.timeScale
     this.mesh.scale.setScalar(o.scale)
     this.mesh.rotation.set(this.spin.y, this.spin.x, 0)
+    const imageMode = p.source === 'image'
+    this.controls.enabled = !imageMode
     this.controls.update()
 
     const u = this.u
@@ -294,8 +364,10 @@ export class Engine {
     u.uPatMix.value = s.mix
 
     const R = this.renderer
-    R.setRenderTarget(this.sceneRT)
-    R.render(this.scene, this.camera)
+    if (!imageMode) {
+      R.setRenderTarget(this.sceneRT)
+      R.render(this.scene, this.camera)
+    }
 
     drawOverlay(this.overlayCtx, this.overlayCanvas.width, this.overlayCanvas.height, this.dpr, ov, {
       time: t,
@@ -311,7 +383,6 @@ export class Engine {
     pu.uShape.value = glyphSetFor(p) ? 7 : Math.max(0, SHAPES.indexOf(r.shape))
     pu.uDotMin.value = r.dotMin
     pu.uDotMax.value = r.dotMax
-    pu.uAngle.value = (r.angle * Math.PI) / 180
     pu.uLevels.value = r.levels
     pu.uDither.value = r.dither ? 1 : 0
     pu.uContrast.value = r.contrast
@@ -342,6 +413,50 @@ export class Engine {
     const palette = PALETTES[p.palette] ?? PALETTES.dark
     pu.uInk.value.fromArray(palette.ink)
     pu.uPaper.value.fromArray(palette.paper)
+
+    const im = p.image
+    pu.uImageMode.value = imageMode ? 1 : 0
+    // cover fit: the image fills the canvas (or the circle's bounding square),
+    // cropped on its long side
+    const [iw, ih] = this.imageSize
+    const { x: pw, y: ph } = pu.uRes.value
+    const ia = iw / ih
+    const ca = pw / ph
+    const circle = im.shape === 'circle' ? im.size : 0
+    pu.uImgCircle.value = circle
+    pu.uImgOutside.value = im.marksOutside ? 1 : 0
+    pu.uImgScale.value.set(ia > ca ? ca / ia : 1, ia > ca ? 1 : ia / ca).divideScalar(im.zoom * (circle || 1))
+
+    // abstract pass first; the raster then reads its result instead of the photo
+    const ab = p.abstract
+    const absStyle = imageMode ? Math.max(0, ABSTRACT_STYLES.indexOf(ab.style)) : 0
+    if (absStyle > 0) {
+      const au = this.absMat.uniforms
+      au.uTime.value = t
+      au.uAbsStyle.value = absStyle
+      au.uAbsAmount.value = ab.amount
+      au.uAbsScale.value = ab.scale
+      au.uAbsSpeed.value = ab.speed
+      au.uAbsSoft.value = ab.softness
+      au.uAbsSwirl.value = ab.swirl
+      R.setRenderTarget(this.absRT)
+      R.render(this.absScene, this.orthoCam)
+    }
+    pu.tImage.value = absStyle > 0 ? this.absRT.texture : this.imageTex
+    const texW = absStyle > 0 ? this.absRT.width : iw
+    pu.uImgTexel.value = (texW * pu.uImgScale.value.x) / pw
+    pu.uImgTarget.value = Math.max(0, IMAGE_TARGETS.indexOf(im.target))
+    pu.uImgLevel.value = im.level
+    pu.uImgSoft.value = Math.max(0.005, im.softness)
+    pu.uImgSpread.value = im.spread
+    pu.uImgDrift.value = im.drift
+    pu.uImgTone.value = Math.max(0, IMAGE_TONES.indexOf(im.tone))
+    pu.uFrost.value = im.frost
+    pu.uFrostBlur.value = im.blur
+    pu.uShade.value = im.shade
+    pu.uImgColor.value = Math.max(0, IMAGE_COLORS.indexOf(im.color))
+    pu.uMarkColor.value = Math.max(0, MARK_COLORS.indexOf(im.marks))
+    pu.uMarkAlpha.value = im.opacity
     R.setRenderTarget(null)
     R.render(this.postScene, this.orthoCam)
   }
@@ -383,6 +498,9 @@ export class Engine {
     this.postMat.dispose()
     this.overlayTex.dispose()
     this.glyphTex.dispose()
+    this.imageTex?.dispose()
+    this.absRT.dispose()
+    this.absMat.dispose()
     this.renderer.dispose()
   }
 }

@@ -17,13 +17,13 @@ export const LOOKS = {
   topo: {
     object: { shape: 'gear', scale: 1.3, displace: { amount: 0.15, frequency: 1.6, speed: 0.2, twist: 0 } },
     surface: { pattern: 'topo', scale: 22, width: 0.35, speed: 0.25, mix: 1, rim: 0.3 },
-    raster: { cell: 5, shape: 'square', dotMax: 0.85, angle: 45, baseGrid: 0.08 },
+    raster: { cell: 5, shape: 'square', dotMax: 0.85, baseGrid: 0.08 },
   },
 
   halftone: {
     object: { shape: 'heart', scale: 1.4, displace: { amount: 0.15, frequency: 1.1, speed: 0.15, twist: 0 } },
     surface: { pattern: 'fingerprint', scale: 7, width: 0.5, speed: 0.2 },
-    raster: { cell: 7, shape: 'circle', angle: 15, dotMax: 1.25, baseGrid: 0, threshold: 0, glow: 0, flicker: 0 },
+    raster: { cell: 7, shape: 'circle', dotMax: 1.25, baseGrid: 0, threshold: 0, glow: 0, flicker: 0 },
     overlay: { blend: 'normal' },
   },
 
@@ -44,12 +44,85 @@ LOOKS.tiles = {
   tiles: { mode: 'behind', amount: 0.45, size: 1, grain: 0.5, coverage: 1 },
 }
 
+// Image looks switch the source to the image.
+// The photo's light areas frosted over, with an even, flickering dot grid.
+LOOKS.frost = {
+  source: 'image',
+  image: { target: 'light', level: 0.55, softness: 0.04, drift: 0.25, tone: 'even', frost: 0.95, blur: 22, shade: 0.12, marks: 'light', opacity: 0.6 },
+  raster: { cell: 14, shape: 'circle', dotMin: 0.22, dotMax: 0.3, contrast: 1, threshold: 0, baseGrid: 0, glow: 0.35, flicker: 0.6 },
+  overlay: { show: false },
+}
+
+// Tiles-style glyphs on grainy squares, filling the photo's shadows
+LOOKS.shadow = {
+  source: 'image',
+  image: { target: 'dark', level: 0.32, softness: 0.08, spread: 10, drift: 0.3, tone: 'inverted', frost: 0.6, blur: 12, shade: -0.1, marks: 'light', opacity: 0.9 },
+  raster: { cell: 12, shape: 'code', dotMin: 0.75, dotMax: 0.95, contrast: 1.4, threshold: 0.2, baseGrid: 0, glow: 0, flicker: 0 },
+  glyphs: { rate: 1, jitter: 0.4, strays: 0.4 },
+  tiles: { mode: 'behind', amount: 0.35, size: 1, grain: 0.5, coverage: 0.85 },
+  overlay: { show: false },
+}
+
+// A full-size circle with matrix characters over the photo's light areas
+LOOKS.window = {
+  source: 'image',
+  image: { shape: 'circle', size: 0.8, marksOutside: false, target: 'light', level: 0.5, softness: 0.1, spread: 12, drift: 0.3, tone: 'even', frost: 0.5, blur: 16, shade: 0, marks: 'light', opacity: 0.8 },
+  raster: { cell: 12, shape: 'matrix', dotMin: 0.75, dotMax: 0.8, contrast: 1.2, threshold: 0, baseGrid: 0, glow: 0.15, flicker: 0 },
+  glyphs: { rate: 1, jitter: 0.3 },
+}
+
+// The photo melted into liquid swirls in a circle, with a few soft dots on top
+LOOKS.liquid = {
+  source: 'image',
+  abstract: { style: 'liquid', amount: 0.7, scale: 0.7, speed: 0.08, softness: 0.7, swirl: 0.35 },
+  image: { shape: 'circle', size: 0.8, marksOutside: false, target: 'light', level: 0.62, softness: 0.1, spread: 14, drift: 0.3, tone: 'even', frost: 0.15, blur: 10, shade: 0, marks: 'light', opacity: 0.5 },
+  raster: { cell: 10, shape: 'circle', dotMin: 0.15, dotMax: 0.25, contrast: 1, threshold: 0, baseGrid: 0, glow: 0.2, flicker: 0.4 },
+  overlay: { show: false },
+}
+
 const rnd = (a, b) => a + Math.random() * (b - a)
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)]
 const chance = (p) => Math.random() < p
 
-export function randomLook() {
+// Only rolls the settings that matter for the source, so the other source's
+// settings stay as they were.
+export function randomLook(source = 'object') {
+  const shared = {
+    raster: {
+      cell: Math.round(rnd(4, 14)),
+      shape: pick(['binary', 'code', 'hex', 'math', 'arrows', 'matrix', 'letters', 'circle', 'circle', 'square', 'diamond', 'plus', 'ring', 'vbar', 'hbar']),
+      dotMax: rnd(0.6, 1.3),
+      levels: chance(0.3) ? Math.round(rnd(2, 6)) : 0,
+      dither: chance(0.15),
+      contrast: rnd(0.9, 2.2),
+      glow: rnd(0, 0.7),
+    },
+    blobs: { amount: chance(0.35) ? rnd(0.3, 0.8) : 0, threshold: rnd(0.25, 0.55), blur: rnd(3, 14) },
+  }
+  if (source === 'image') {
+    return {
+      ...shared,
+      image: {
+        target: pick(['dark', 'dark', 'light']),
+        level: rnd(0.25, 0.55),
+        drift: rnd(0, 0.6),
+        tone: pick(['image', 'inverted', 'inverted', 'even']),
+        frost: rnd(0.3, 1),
+        blur: rnd(4, 30),
+        shade: rnd(-0.25, 0.25),
+        marks: pick(['light', 'light', 'dark', 'tinted']),
+      },
+      abstract: {
+        style: pick(['none', 'liquid', 'liquid', 'vortex', 'smear']),
+        amount: rnd(0.3, 1.2),
+        scale: rnd(0.6, 2.5),
+        softness: rnd(0.2, 0.6),
+        swirl: rnd(0, 0.6),
+      },
+    }
+  }
   return {
+    ...shared,
     object: {
       shape: pick(['padlock', 'note', 'heart', 'star', 'bolt', 'play', 'plus', 'speech', 'gear', 'cloud', 'key', 'microphone', 'headphones']),
       spin: { x: rnd(-0.08, 0.08), y: rnd(-0.04, 0.04) },
@@ -63,16 +136,5 @@ export function randomLook() {
       width: rnd(0.2, 0.7),
       light: { x: rnd(-1, 1), y: rnd(-1, 1) },
     },
-    raster: {
-      cell: Math.round(rnd(4, 14)),
-      shape: pick(['binary', 'code', 'hex', 'math', 'arrows', 'matrix', 'letters', 'circle', 'circle', 'square', 'diamond', 'plus', 'ring', 'vbar', 'hbar']),
-      dotMax: rnd(0.6, 1.3),
-      angle: chance(0.4) ? Math.round(rnd(0, 90)) : 0,
-      levels: chance(0.3) ? Math.round(rnd(2, 6)) : 0,
-      dither: chance(0.15),
-      contrast: rnd(0.9, 2.2),
-      glow: rnd(0, 0.7),
-    },
-    blobs: { amount: chance(0.35) ? rnd(0.3, 0.8) : 0, threshold: rnd(0.25, 0.55), blur: rnd(3, 14) },
   }
 }

@@ -49,3 +49,14 @@ body,
   pointer-events: none;
   white-space: nowrap;
 }
+
+.stage.image canvas,
+.stage.image canvas:active {
+  cursor: default;
+}
+
+/* panel folders that have no effect for the current source */
+body[data-source='image'] .dialkit-folder:has(> .dialkit-folder-header > .dialkit-folder-header-top:is([aria-label='Object'], [aria-label='Surface'])),
+body[data-source='object'] .dialkit-folder:has(> .dialkit-folder-header > .dialkit-folder-header-top:is([aria-label='Image'], [aria-label='Abstract'])) {
+  display: none;
+}

@@ -54,7 +54,6 @@ float hash12(vec2 p){
   p3 += dot(p3, p3.yzx + 33.33);
   return fract((p3.x + p3.y) * p3.z);
 }
-mat2 rot(float a){ float c = cos(a), s = sin(a); return mat2(c, -s, s, c); }
 `
 
 // ---------------------------------------------------------------------------
@@ -201,7 +200,109 @@ void main(){
 }
 `
 
+// Image mode, before the raster: turns the photo into flowing, abstract
+// shapes. Runs in the photo's own uv space into a target the size of the
+// photo, which the raster then reads in place of the photo.
+export const abstractFrag = /* glsl */ `
+uniform sampler2D tPhoto;
+uniform vec2 uPhotoSize;
+uniform float uTime;
+uniform int uAbsStyle;    // 1 liquid, 2 vortex, 3 smear
+uniform float uAbsAmount;
+uniform float uAbsScale;
+uniform float uAbsSpeed;
+uniform float uAbsSoft;
+uniform float uAbsSwirl;
+
+varying vec2 vUv;
+
+${noise}
+
+float fbm(vec3 p){
+  float s = 0.0;
+  float a = 0.5;
+  for (int i = 0; i < 4; i++) {
+    s += snoise(p) * a;
+    p = p * 2.03 + 17.1;
+    a *= 0.5;
+  }
+  return s;
+}
+
+vec2 rot2(vec2 v, float a){
+  float c = cos(a), s = sin(a);
+  return vec2(c * v.x - s * v.y, s * v.x + c * v.y);
+}
+
+// the photo, softened: a mip level picked by softness, smoothed with a few taps
+vec3 photo(vec2 uv){
+  float lod = uAbsSoft * 6.0;
+  vec2 px = exp2(lod) * 0.7 / uPhotoSize;
+  vec3 c = textureLod(tPhoto, uv, lod).rgb * 0.4;
+  c += textureLod(tPhoto, uv + vec2(px.x, px.y), lod).rgb * 0.15;
+  c += textureLod(tPhoto, uv + vec2(-px.x, px.y), lod).rgb * 0.15;
+  c += textureLod(tPhoto, uv + vec2(px.x, -px.y), lod).rgb * 0.15;
+  c += textureLod(tPhoto, uv - px, lod).rgb * 0.15;
+  return c;
+}
+
+void main(){
+  float aspect = uPhotoSize.x / uPhotoSize.y;
+  vec2 k = vec2(aspect, 1.0);
+  vec2 p = (vUv - 0.5) * k * uAbsScale;
+  float z = uTime * uAbsSpeed;
+  float h; // flow field the light and dark swirls follow
+  vec3 col;
+
+  if (uAbsStyle == 2) {
+    // vortex: three slowly wandering twirls, alternating direction
+    vec2 q = (vUv - 0.5) * k;
+    h = 0.0;
+    for (int i = 0; i < 3; i++) {
+      float fi = float(i);
+      vec2 c = vec2(snoise(vec3(fi * 7.1, z * 0.3, 1.0)), snoise(vec3(fi * 3.7, z * 0.3, 5.0))) * 0.35;
+      vec2 d = q - c;
+      float a = uAbsAmount * 4.0 * exp(-dot(d, d) * uAbsScale * uAbsScale * 4.0) * (mod(fi, 2.0) < 1.0 ? 1.0 : -1.0);
+      q = c + rot2(d, a);
+      h += a * 0.25;
+    }
+    h += fbm(vec3(q * uAbsScale * 2.0, z)) * 0.3;
+    col = photo(q / k + 0.5);
+  } else if (uAbsStyle == 3) {
+    // smear: follow a noise flow field and average along it, like dragged paint;
+    // a random start along the first step turns sampling ridges into grain
+    vec2 q = vUv;
+    float stepLen = uAbsAmount * 0.02;
+    float jitter = fract(sin(dot(vUv * uPhotoSize, vec2(12.9898, 78.233))) * 43758.5453);
+    float n0 = fbm(vec3((q - 0.5) * k * uAbsScale, z));
+    q += vec2(cos(n0 * 3.1416), sin(n0 * 3.1416)) * stepLen * jitter / k;
+    col = vec3(0.0);
+    for (int i = 0; i < 10; i++) {
+      float n = fbm(vec3((q - 0.5) * k * uAbsScale, z));
+      col += textureLod(tPhoto, q, uAbsSoft * 6.0).rgb;
+      q += vec2(cos(n * 3.1416), sin(n * 3.1416)) * stepLen / k;
+    }
+    col /= 10.0;
+    h = fbm(vec3(p * 1.5, z));
+  } else {
+    // liquid: noise warped by noise (Inigo Quilez's domain warping)
+    vec2 a = vec2(fbm(vec3(p, z)), fbm(vec3(p + vec2(5.2, 1.3), z)));
+    vec2 b = vec2(fbm(vec3(p + 3.0 * a + vec2(1.7, 9.2), z)), fbm(vec3(p + 3.0 * a + vec2(8.3, 2.8), z)));
+    h = length(b) + a.x;
+    col = photo(vUv + b * uAbsAmount * 0.25 / k);
+  }
+
+  // subtle light and dark swirls along the flow, with thin highlights, like satin
+  float s = sin(h * 9.0 + z * 2.0);
+  col *= 1.0 + uAbsSwirl * 0.45 * s;
+  col += uAbsSwirl * 0.18 * pow(max(s, 0.0), 8.0);
+  gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+`
+
 // Pass 2: the raster. Luminance -> dot grid, blobs, overlay, color.
+// In image mode the photo stays visible and the raster only draws inside a
+// mask (its dark or light areas), over a frosted copy of the photo.
 export const postFrag = /* glsl */ `
 uniform sampler2D tSrc;
 uniform sampler2D tOverlay;
@@ -213,7 +314,6 @@ uniform float uCell;
 uniform int uShape;
 uniform float uDotMin;
 uniform float uDotMax;
-uniform float uAngle;
 uniform float uLevels;
 uniform float uDither;
 uniform float uContrast;
@@ -251,8 +351,28 @@ uniform int uOverlayMode;
 uniform vec3 uInk;
 uniform vec3 uPaper;
 
+uniform int uImageMode;
+uniform sampler2D tImage;
+uniform vec2 uImgScale;   // cover fit: canvas uv -> image uv
+uniform float uImgTexel;  // image texels per canvas pixel
+uniform int uImgTarget;   // 0 dark areas, 1 light areas, 2 everywhere
+uniform float uImgLevel;
+uniform float uImgSoft;
+uniform float uImgSpread;
+uniform float uImgDrift;
+uniform int uImgTone;     // 0 follow image, 1 inverted, 2 even
+uniform float uFrost;
+uniform float uFrostBlur;
+uniform float uShade;
+uniform int uImgColor;    // 0 original, 1 mono, 2 duotone
+uniform int uMarkColor;   // 0 light, 1 dark, 2 tinted
+uniform float uMarkAlpha;
+uniform float uImgCircle; // circle diameter as a fraction of the canvas, 0 = full frame
+uniform float uImgOutside; // 1 = marks also outside the circle, 0 = clipped to it
+
 varying vec2 vUv;
 
+${noise}
 ${common}
 
 float bayer2(vec2 a){ a = floor(a); return fract(dot(a, vec2(0.5, a.y * 0.75))); }
@@ -263,7 +383,39 @@ float tone(float l){
   return pow(clamp(l, 0.0, 1.0), uGamma);
 }
 
-float src(vec2 uv){ return texture2D(tSrc, uv).r; }
+vec2 imgUV(vec2 uv){ return (uv - 0.5) * uImgScale + 0.5; }
+float luma(vec3 c){ return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+// blurred photo: two rings of taps on a mip level matched to the radius (px)
+vec3 imgBlur(vec2 uv, float px){
+  vec2 r = px * uDpr / uRes;
+  float lod = log2(max(1.0, px * uDpr * uImgTexel * 0.5));
+  vec3 s = textureLod(tImage, imgUV(uv), lod).rgb * 0.2;
+  for (int i = 0; i < 8; i++) {
+    float a = float(i) * 0.785398;
+    s += textureLod(tImage, imgUV(uv + vec2(cos(a), sin(a)) * r), lod).rgb * 0.06;
+    s += textureLod(tImage, imgUV(uv + vec2(cos(a + 0.39), sin(a + 0.39)) * r * 0.5), lod).rgb * 0.04;
+  }
+  return s;
+}
+
+// where the effect goes, 0..1; drift wobbles the edge with slow noise
+// The mask comes from the photo's content, so nothing is masked in where
+// there is no photo (outside the circle's bounding square).
+float imgMask(vec2 uv){
+  vec2 iuv = imgUV(uv);
+  if (any(lessThan(iuv, vec2(0.0))) || any(greaterThan(iuv, vec2(1.0)))) return 0.0;
+  if (uImgTarget == 2) return 1.0;
+  float d = snoise(vec3(uv * 2.5, uTime * 0.15)) * uImgDrift * 0.2;
+  float m = smoothstep(uImgLevel - uImgSoft, uImgLevel + uImgSoft, luma(imgBlur(uv, uImgSpread)) + d);
+  return uImgTarget == 0 ? 1.0 - m : m;
+}
+
+float src(vec2 uv){
+  if (uImageMode == 0) return texture2D(tSrc, uv).r;
+  // average over about one cell, so a cell reads the area it covers
+  return luma(textureLod(tImage, imgUV(uv), log2(max(1.0, uCell * uDpr * uImgTexel))).rgb);
+}
 
 float shapeMask(vec2 q, float r, float aa){
   if (r <= 0.0) return 0.0;
@@ -296,13 +448,16 @@ float render(vec2 frag){
   float cellPx = uCell * uDpr;
   vec2 center = uRes * 0.5;
 
-  // dot grid (optionally rotated, like a print halftone screen)
-  vec2 g = rot(uAngle) * (frag - center);
+  // dot grid
+  vec2 g = frag - center;
   vec2 cid = floor(g / cellPx);
   vec2 q = fract(g / cellPx) - 0.5;
-  vec2 cc = rot(-uAngle) * ((cid + 0.5) * cellPx) + center;
+  vec2 cc = (cid + 0.5) * cellPx + center;
 
-  float l = tone(src(cc / uRes));
+  float raw = src(cc / uRes);
+  if (uImageMode == 1 && uImgTone == 1) raw = 1.0 - raw;
+  if (uImageMode == 1 && uImgTone == 2) raw = 0.6;
+  float l = tone(raw);
   l *= 1.0 + (hash12(cid + floor(uTime * 12.0)) - 0.5) * 2.0 * uFlicker;
   l = clamp(l, 0.0, 1.0);
   if (uLevels > 0.5) l = floor(l * uLevels + 0.5) / uLevels;
@@ -345,6 +500,8 @@ float render(vec2 frag){
   float base = (1.0 - smoothstep(uBaseSize * 0.5 - aa, uBaseSize * 0.5 + aa, length(q))) * uBase;
   float glow = exp(-dot(q, q) * 14.0) * l * uGlow;
   float v = max(dots, base) + glow;
+  // whole cells switch on inside the mask, so its edge follows the grid
+  if (uImageMode == 1) v *= smoothstep(0.35, 0.65, imgMask(cc / uRes));
 
   // soft blobs: blurred, thresholded, grainy copy of the image under the dots
   if (uBlobAmt > 0.0) {
@@ -360,17 +517,61 @@ float render(vec2 frag){
     float gn = hash12(frag + fract(uTime) * 91.7);
     float blob = smoothstep(uBlobThr - uBlobSoft, uBlobThr + uBlobSoft, s + (gn - 0.5) * uBlobGrain * 0.5);
     blob *= mix(1.0, 0.55 + 0.45 * gn, uBlobGrain);
+    if (uImageMode == 1) blob *= imgMask(uv);
     v = max(v, blob * uBlobAmt);
   }
 
   return v;
 }
 
+// 1 inside the image circle, 0 outside (always 1 for the full frame)
+float inCircle(vec2 p){
+  if (uImgCircle <= 0.0) return 1.0;
+  float d = length(p - uRes * 0.5) - uImgCircle * 0.5 * min(uRes.x, uRes.y);
+  return 1.0 - smoothstep(-1.0, 1.0, d);
+}
+
+vec3 imageColor(vec2 frag, float v, float o, float grain, float vig){
+  vec2 uv = frag / uRes;
+  float m = imgMask(uv);
+  vec3 photo = texture2D(tImage, imgUV(uv)).rgb;
+  vec3 frosted = imgBlur(uv, uFrostBlur);
+  vec3 col = mix(photo, frosted, m * uFrost);
+  col = mix(col, vec3(step(0.0, uShade)), abs(uShade) * m);
+  vec3 mark = uMarkColor == 0 ? vec3(1.0) : uMarkColor == 1 ? vec3(0.03) : mix(frosted, vec3(1.0), 0.55);
+  if (uImgColor > 0) {
+    col = vec3(luma(col));
+    mark = vec3(luma(mark));
+  }
+  if (uImgColor == 2) {
+    col = mix(uPaper, uInk, col.r);
+    mark = mix(uPaper, uInk, mark.r);
+  }
+  // the photo is cropped to the circle; marks are either clipped with it, or
+  // carry on outside on paper in ink, decided per cell so none is split
+  col = mix(uPaper, col, inCircle(frag));
+  if (uImgOutside < 0.5) v *= inCircle(frag);
+  float cellPx = uCell * uDpr;
+  vec2 cc = (floor((frag - uRes * 0.5) / cellPx) + 0.5) * cellPx + uRes * 0.5;
+  mark = mix(uInk, mark, step(0.5, inCircle(cc)));
+  col = mix(col, mark, clamp(v, 0.0, 1.0) * uMarkAlpha);
+  col = uOverlayMode == 0 ? mix(col, mark, o) : abs(col - vec3(o));
+  return clamp((col + grain) * vig, 0.0, 1.0);
+}
+
 void main(){
   vec2 frag = gl_FragCoord.xy;
-  vec3 vv = vec3(render(frag));
-
+  float v = render(frag);
   float o = texture2D(tOverlay, frag / uRes).a;
+
+  if (uImageMode == 1) {
+    vec2 c = frag / uRes - 0.5;
+    float grain = (hash12(frag * 1.37 + fract(uTime * 7.0) * 100.0) - 0.5) * uGrain;
+    gl_FragColor = vec4(imageColor(frag, v, o, grain, 1.0 - uVignette * dot(c, c) * 2.5), 1.0);
+    return;
+  }
+
+  vec3 vv = vec3(v);
   vv = uOverlayMode == 0 ? max(vv, vec3(o)) : abs(vv - vec3(o));
 
   vv += (hash12(frag * 1.37 + fract(uTime * 7.0) * 100.0) - 0.5) * uGrain;

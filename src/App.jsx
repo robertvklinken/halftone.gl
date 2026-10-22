@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { DialRoot, DialStore, useDialKitController } from 'dialkit'
 import 'dialkit/styles.css'
 import { Engine } from './engine/Engine'
+import { imageFromFile, storedImage } from './engine/image'
 import { LOOKS, randomLook } from './looks'
 
 const config = {
@@ -15,6 +16,14 @@ const config = {
     ],
     default: 'dark',
   },
+  source: {
+    type: 'select',
+    options: [
+      { value: 'object', label: '3D object' },
+      { value: 'image', label: 'Image' },
+    ],
+    default: 'object',
+  },
   looks: {
     _collapsed: true,
     signal: { type: 'action', label: 'Signal (default)' },
@@ -23,6 +32,95 @@ const config = {
     halftone: { type: 'action', label: 'Halftone' },
     code: { type: 'action', label: 'Code' },
     tiles: { type: 'action', label: 'Tiles' },
+    frost: { type: 'action', label: 'Frost (image)' },
+    shadow: { type: 'action', label: 'Shadow tiles (image)' },
+    window: { type: 'action', label: 'Window (image)' },
+    liquid: { type: 'action', label: 'Liquid (image)' },
+  },
+
+  // image mode: where the raster goes on the photo and how the photo looks there
+  image: {
+    _collapsed: true,
+    load: { type: 'action', label: 'Load image…' },
+    target: {
+      type: 'select',
+      options: [
+        { value: 'dark', label: 'Dark areas' },
+        { value: 'light', label: 'Light areas' },
+        { value: 'all', label: 'Everywhere' },
+      ],
+      default: 'dark',
+    },
+    // brightness cut-off
+    level: [0.35, 0, 1],
+    softness: [0.08, 0, 0.5],
+    spread: [8, 0, 40],
+    drift: [0.3, 0, 1],
+    tone: {
+      type: 'select',
+      options: [
+        { value: 'image', label: 'Follow image' },
+        { value: 'inverted', label: 'Inverted' },
+        { value: 'even', label: 'Even' },
+      ],
+      default: 'inverted',
+    },
+    frost: [0.7, 0, 1],
+    blur: [14, 0, 60],
+    shade: [0.08, -1, 1],
+    marks: {
+      type: 'select',
+      options: [
+        { value: 'light', label: 'Light' },
+        { value: 'dark', label: 'Dark' },
+        { value: 'tinted', label: 'Tinted' },
+      ],
+      default: 'light',
+    },
+    opacity: [0.85, 0, 1],
+    color: {
+      type: 'select',
+      options: [
+        { value: 'original', label: 'Original' },
+        { value: 'mono', label: 'Mono' },
+        { value: 'duotone', label: 'Duotone (palette)' },
+      ],
+      default: 'original',
+    },
+    zoom: [1, 1, 3],
+    // crop the photo to a centred circle; the raster keeps covering the canvas
+    shape: {
+      type: 'select',
+      options: [
+        { value: 'circle', label: 'Circle' },
+        { value: 'full', label: 'Full frame' },
+      ],
+      default: 'circle',
+    },
+    // circle diameter, as a fraction of the canvas
+    size: [0.8, 0.2, 1],
+    // off: marks are clipped to the circle; on: they also follow the photo's corners outside it
+    marksOutside: false,
+  },
+
+  // image mode: reshape the photo into flowing, abstract shapes first
+  abstract: {
+    style: {
+      type: 'select',
+      options: [
+        { value: 'none', label: 'Off' },
+        { value: 'liquid', label: 'Liquid' },
+        { value: 'vortex', label: 'Vortex' },
+        { value: 'smear', label: 'Smear' },
+      ],
+      default: 'none',
+    },
+    amount: [0.7, 0, 2],
+    scale: [0.8, 0.2, 5],
+    speed: [0.08, 0, 1],
+    softness: [0.55, 0, 1],
+    // light and dark swirls along the flow
+    swirl: [0.35, 0, 1],
   },
 
   object: {
@@ -98,7 +196,6 @@ const config = {
     },
     dotMin: [0, 0, 1],
     dotMax: [0.9, 0, 1.6],
-    angle: [0, 0, 90, 1],
     levels: [0, 0, 12, 1],
     dither: false,
     contrast: [1.5, 0, 4],
@@ -225,13 +322,16 @@ function randomize(d) {
     DialStore.clearActivePreset(PANEL_ID)
     d.setValues(current)
   }
-  d.setValues(randomLook())
+  d.setValues(randomLook(d.getValues().source))
 }
+
+const imageFile = (list) => [...(list ?? [])].find((f) => f.type.startsWith('image/'))
 
 export default function App() {
   const canvasRef = useRef(null)
   const engineRef = useRef(null)
   const dialRef = useRef(null)
+  const fileRef = useRef(null)
   const [recording, setRecording] = useState(false)
 
   const dial = useDialKitController('halftone.gl', config, {
@@ -242,12 +342,15 @@ export default function App() {
       const engine = engineRef.current
       if (path === 'randomize') randomize(d)
       else if (path.startsWith('looks.')) {
-        // looks change the shader, never the palette
-        const { palette } = d.getValues()
+        // looks change the shader, never the palette; object looks keep the
+        // current source, so they also work on an image
+        const { palette, source } = d.getValues()
+        const look = LOOKS[path.slice(6)] ?? {}
         d.resetValues()
-        d.setValues(LOOKS[path.slice(6)] ?? {})
-        d.setValues({ palette })
-      } else if (path === 'overlay.resetText') d?.setValues({ overlay: folderDefaults(config.overlay) })
+        d.setValues(look)
+        d.setValues({ palette, source: look.source ?? source })
+      } else if (path === 'image.load') fileRef.current?.click()
+      else if (path === 'overlay.resetText') d?.setValues({ overlay: folderDefaults(config.overlay) })
       else if (path === 'output.resetAll') d?.resetValues()
       else if (path === 'output.png') engine?.exportPNG()
       else if (path === 'output.record') engine?.record(6)
@@ -261,7 +364,39 @@ export default function App() {
     engineRef.current = engine
     if (import.meta.env.DEV) window.__engine = engine
     engine.setParams(dialRef.current.getValues())
+    storedImage().then((img) => img && engine.setImage(img))
     return () => engine.dispose()
+  }, [])
+
+  const loadImage = async (file) => {
+    if (!file) return
+    try {
+      engineRef.current?.setImage(await imageFromFile(file))
+      dialRef.current?.setValues({ source: 'image' })
+    } catch (err) {
+      console.error(err)
+    }
+  }
+
+  // drop an image anywhere, or paste one
+  useEffect(() => {
+    const onDragOver = (e) => e.preventDefault()
+    const onDrop = (e) => {
+      e.preventDefault()
+      loadImage(imageFile(e.dataTransfer?.files))
+    }
+    const onPaste = (e) => {
+      if (e.target.closest?.('input, textarea, [contenteditable]')) return
+      loadImage(imageFile(e.clipboardData?.files))
+    }
+    window.addEventListener('dragover', onDragOver)
+    window.addEventListener('drop', onDrop)
+    window.addEventListener('paste', onPaste)
+    return () => {
+      window.removeEventListener('dragover', onDragOver)
+      window.removeEventListener('drop', onDrop)
+      window.removeEventListener('paste', onPaste)
+    }
   }, [])
 
   useEffect(() => {
@@ -278,13 +413,32 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  const imageMode = dial.values.source === 'image'
+
+  // index.css hides the folders that do nothing for this source
+  useEffect(() => {
+    document.body.dataset.source = dial.values.source
+  }, [dial.values.source])
+
   return (
     <>
-      <div className="stage">
+      <div className={imageMode ? 'stage image' : 'stage'}>
         <canvas ref={canvasRef} />
       </div>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={(e) => {
+          loadImage(e.target.files?.[0])
+          e.target.value = ''
+        }}
+      />
       {recording && <div className="rec">● REC</div>}
-      <div className="hint">DRAG TO ORBIT · SCROLL TO ZOOM · R RANDOMIZE · S SAVE PNG</div>
+      <div className="hint">
+        {imageMode ? 'DROP OR PASTE AN IMAGE' : 'DRAG TO ORBIT · SCROLL TO ZOOM'} · R RANDOMIZE · S SAVE PNG
+      </div>
       <DialRoot position="top-right" theme="dark" defaultOpen productionEnabled />
     </>
   )
