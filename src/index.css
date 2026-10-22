@@ -1,0 +1,51 @@
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: #161616;
+  overflow: hidden;
+}
+
+.stage {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+
+/* square canvas, so PNG and video exports are square too */
+.stage canvas {
+  display: block;
+  width: min(100vw, 100vh);
+  height: min(100vw, 100vh);
+  cursor: grab;
+}
+
+.stage canvas:active {
+  cursor: grabbing;
+}
+
+.rec {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  padding: 6px 10px;
+  font: 12px/1 'Space Mono', monospace;
+  letter-spacing: 0.1em;
+  color: #fff;
+  background: #e5212e;
+  pointer-events: none;
+}
+
+.hint {
+  position: fixed;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  font: 11px/1 'Space Mono', monospace;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+  white-space: nowrap;
+}
